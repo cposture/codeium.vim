@@ -21,6 +21,7 @@ let s:language_enum = {
       \ 'julia': 19,
       \ 'kotlin': 20,
       \ 'latex': 21,
+      \ 'tex': 21,
       \ 'less': 22,
       \ 'lua': 23,
       \ 'makefile': 24,
@@ -51,6 +52,21 @@ let s:language_enum = {
       \ 'xsl': 49,
       \ 'yaml': 50,
       \ 'svelte': 51,
+      \ 'toml': 52,
+      \ 'dart': 53,
+      \ 'rst': 54,
+      \ 'ocaml': 55,
+      \ 'cmake': 56,
+      \ 'pascal': 57,
+      \ 'elixir': 58,
+      \ 'fsharp': 59,
+      \ 'lisp': 60,
+      \ 'matlab': 61,
+      \ 'ps1': 62,
+      \ 'solidity': 63,
+      \ 'ada': 64,
+      \ 'blade': 84,
+      \ 'astro': 85,
       \ }
 
 let s:filetype_aliases = {
@@ -80,11 +96,15 @@ function! codeium#doc#GetDocument(bufId, curLine, curCol) abort
   let filetype = substitute(getbufvar(a:bufId, '&filetype'), '\..*', '', '')
   # 对文件类型别名做一个转换，将类似 cs 转换为 csharp, 文件类型为空则为 plaintext
   let language = get(s:filetype_aliases, empty(filetype) ? 'text' : filetype, filetype)
-
+  if empty(filetype) && get(g:, 'codeium_warn_filetype_missing', v:true)
+    call codeium#log#Warn('No filetype detected. This will affect completion quality.')
+    let g:codeium_warn_filetype_missing = v:false
+  endif
+  let editor_language = empty(getbufvar(a:bufId, '&filetype')) ? 'unspecified' : getbufvar(a:bufId, '&filetype')
   let doc = {
-        \ 'text': join(lines, codeium#util#LineEndingChars()), # 文档内容列表转为 text 并加上换行符\n
-        \ 'editor_language': getbufvar(a:bufId, '&filetype'), # 原始的文件类型
-        \ 'language': get(s:language_enum, language, 0), # 将语言文本转为语言编号
+        \ 'text': join(lines, codeium#util#LineEndingChars()),# 文档内容列表转为 text 并加上换行符\n
+        \ 'editor_language': editor_language,
+        \ 'language': get(s:language_enum, language, 0),# 将语言文本转为语言编号
         \ 'cursor_position': {'row': a:curLine - 1, 'col': a:curCol - 1},
         \ 'absolute_path': fnamemodify(bufname(a:bufId), ':p'),
         \ 'relative_path': fnamemodify(bufname(a:bufId), ':')

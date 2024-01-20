@@ -10,16 +10,6 @@ function! codeium#command#BrowserCommand() abort
   endif
 endfunction
 
-function! s:Uuid() abort
-  if has('win32')
-    return system('powershell -Command "[guid]::NewGuid().Guid"')
-  elseif executable('uuidgen')
-    return system('uuidgen')
-  endif
-
-  throw 'Could not generate uuid. Please make sure uuidgen is installed.'
-endfunction
-
 function! codeium#command#XdgConfigDir() abort
   let config_dir = $XDG_CONFIG_HOME
   if empty(config_dir)
@@ -29,7 +19,13 @@ function! codeium#command#XdgConfigDir() abort
 endfunction
 
 function! codeium#command#HomeDir() abort
-  return $HOME . '/.codeium'
+  let data_dir = $XDG_DATA_HOME
+  if empty(data_dir)
+    let data_dir = $HOME . '/.codeium'
+  else
+    let data_dir = data_dir . '/.codeium'
+  endif
+  return data_dir
 endfunction
 
 function! codeium#command#LoadConfig(dir) abort
@@ -59,8 +55,10 @@ function! s:commands.Auth(...) abort
     return
   endif
 
-  let uuid = trim(s:Uuid())
-  let url = 'https://www.codeium.com/profile?response_type=token&redirect_uri=vim-show-auth-token&state=' . uuid . '&scope=openid%20profile%20email&redirect_parameters_type=query'
+  let config = get(g:, 'codeium_server_config', {})
+  let portal_url = get(config, 'portal_url', 'https://www.codeium.com')
+
+  let url = portal_url . '/profile?response_type=token&redirect_uri=vim-show-auth-token&state=a&scope=openid%20profile%20email&redirect_parameters_type=query'
   let browser = codeium#command#BrowserCommand()
   let opened_browser = v:false
   if !empty(browser)
@@ -86,11 +84,32 @@ function! s:commands.Auth(...) abort
   call inputrestore()
   let tries = 0
 
+  if has_key(config, 'api_url') && !empty(config.api_url)
+    let register_user_url = config.api_url . '/exa.seat_management_pb.SeatManagementService/RegisterUser'
+  else
+    let register_user_url = 'https://api.codeium.com/register_user/'
+  endif
+
   while empty(api_key) && tries < 3
-    let command = 'curl -sS https://api.codeium.com/register_user/ ' .
+    let command = 'curl -sS ' . register_user_url . ' ' .
           \ '--header "Content-Type: application/json" ' .
           \ '--data ' . shellescape(json_encode({'firebase_id_token': auth_token}))
     let response = system(command)
+    let curl_ssl_error = 'The revocation function was unable to check revocation '
+          \ . 'for the certificate.'
+    if has('win32') && response=~curl_ssl_error
+        call inputsave()
+        let useNoSsl = input('For Windows systems behind a corporate proxy there '
+              \ . 'may be trouble verifying the SSL certificates. '
+              \ . 'Would you like to try auth without checking SSL certificate revocation? (y/n): ')
+        call inputrestore()
+        if useNoSsl ==? 'y'
+            let command = 'curl --ssl-no-revoke -sS ' . register_user_url . ' ' .
+                  \ '--header "Content-Type: application/json" ' .
+                  \ '--data ' . shellescape(json_encode({'firebase_id_token': auth_token}))
+            let response = system(command)
+        endif
+    endif
     let res = json_decode(response)
     let api_key = get(res, 'api_key', '')
     if empty(api_key)
@@ -126,15 +145,36 @@ function! s:commands.DisableBuffer(...) abort
   let b:codeium_enabled = 0
 endfunction
 
+" Run codeium server only if its not already started
+function! codeium#command#StartLanguageServer() abort
+  if !get(g:, 'codeium_server_started', v:false)
+    call timer_start(0, function('codeium#server#Start'))
+    let g:codeium_server_started = v:true
+  endif
+endfunction
+
 function! s:commands.Enable(...) abort
   let g:codeium_enabled = 1
+  call codeium#command#StartLanguageServer()
 endfunction
 
 function! s:commands.EnableBuffer(...) abort
   let b:codeium_enabled = 1
+  call codeium#command#StartLanguageServer()
+endfunction
+
+function! s:commands.Toggle(...) abort
+  if exists('g:codeium_enabled') && g:codeium_enabled == v:false
+      call s:commands.Enable()
+  else
+      call s:commands.Disable()
+  endif
 endfunction
 
 function! codeium#command#ApiKey() abort
+  if s:api_key == ''
+    echom 'Codeium: No API key found; maybe you need to run `:Codeium Auth`?'
+  endif
   return s:api_key
 endfunction
 

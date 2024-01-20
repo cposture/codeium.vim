@@ -1,5 +1,5 @@
-let s:language_server_version = '1.1.69'
-let s:language_server_sha = '28875a216803bd4d2360450d76483af784ec7bc3'
+let s:language_server_version = '1.6.20'
+let s:language_server_sha = 'c8aabc8753a3cea9d68cda55f9395290bdf75942'
 let s:root = expand('<sfile>:h:h:h')
 let s:bin = v:null
 
@@ -25,13 +25,13 @@ if !exists('s:editor_version')
 endif
 
 let s:server_port = v:null
-let s:server_job = v:null
+let g:codeium_server_job = v:null
 
 function! s:OnExit(result, status, on_complete_cb) abort
   let did_close = has_key(a:result, 'closed')
   if did_close
     call remove(a:result, 'closed')
-    call a:on_complete_cb(a:result.out, a:status)
+    call a:on_complete_cb(a:result.out, a:result.err, a:status)
   else
     " Wait until we receive OnClose, and call on_complete_cb then.
     let a:result.exit_status = a:status
@@ -41,7 +41,7 @@ endfunction
 function! s:OnClose(result, on_complete_cb) abort
   let did_exit = has_key(a:result, 'exit_status')
   if did_exit
-    call a:on_complete_cb(a:result.out, a:result.exit_status)
+    call a:on_complete_cb(a:result.out, a:result.err, a:result.exit_status)
   else
     " Wait until we receive OnExit, and call on_complete_cb then.
     let a:result.closed = v:true
@@ -65,7 +65,7 @@ function! codeium#server#Request(type, data, ...) abort
   if s:server_port is# v:null
     throw 'Server port has not been properly initialized.'
   endif
-  let uri = 'http://localhost:' . s:server_port .
+  let uri = 'http://127.0.0.1:' . s:server_port .
       \ '/exa.language_server_pb.LanguageServerService/' . a:type
   let data = json_encode(a:data)
   let args = [
@@ -73,12 +73,13 @@ function! codeium#server#Request(type, data, ...) abort
               \ '--header', 'Content-Type: application/json',
               \ '-d@-'
               \ ]
-  let result = {'out': []}
+  let result = {'out': [], 'err': []}
   let ExitCallback = a:0 && !empty(a:1) ? a:1 : function('s:NoopCallback')
   if has('nvim')
     let jobid = jobstart(args, {
                 \ 'on_stdout': { channel, data, t -> add(result.out, join(data, "\n")) },
-                \ 'on_exit': { job, status, t -> ExitCallback(result.out, status) },
+                \ 'on_stderr': { channel, data, t -> add(result.err, join(data, "\n")) },
+                \ 'on_exit': { job, status, t -> ExitCallback(result.out, result.err, status) },
                 \ })
     call chansend(jobid, data)
     call chanclose(jobid, 'stdin')
@@ -88,9 +89,10 @@ function! codeium#server#Request(type, data, ...) abort
     let job = job_start(args, {
                 \ 'in_mode': 'raw',
                 \ 'out_mode': 'raw',
-                \ 'out_cb': { channel, data -> add(result.out, data) }, # 接收命令的 stdout，每收到一行输出就调用一次该函数：保存到 result.out
-                \ 'exit_cb': { job, status -> s:OnExit(result, status, ExitCallback) }, # 任务结束后调用 s:OnExit
-                \ 'close_cb': { channel -> s:OnClose(result, ExitCallback) } # 当任务使用的管道被关闭时调用 s:OnClose
+                \ 'out_cb': { channel, data -> add(result.out, data) },# 接收命令的 stdout，每收到一行输出就调用一次该函数：保存到 result.out
+                \ 'err_cb': { channel, data -> add(result.err, data) },
+                \ 'exit_cb': { job, status -> s:OnExit(result, status, ExitCallback) },
+                \ 'close_cb': { channel -> s:OnClose(result, ExitCallback) }
                 \ })
     # 获取任务的输入通道对象
     let channel = job_getchannel(job)
@@ -126,8 +128,16 @@ function! s:SendHeartbeat(timer) abort
 endfunction
 
 function! codeium#server#Start(...) abort
-  let os = substitute(system('uname'), '\n', '', '')
-  let arch = substitute(system('uname -m'), '\n', '', '')
+  let user_defined_codeium_bin = get(g:, 'codeium_bin', '')
+
+  if user_defined_codeium_bin != '' && filereadable(user_defined_codeium_bin)
+    let s:bin = user_defined_codeium_bin
+    call s:ActuallyStart()
+    return
+  endif
+
+  silent let os = substitute(system('uname'), '\n', '', '')
+  silent let arch = substitute(system('uname -m'), '\n', '', '')
   let is_arm = stridx(arch, 'arm') == 0 || stridx(arch, 'aarch64') == 0
 
   if os ==# 'Linux' && is_arm
@@ -147,7 +157,8 @@ function! codeium#server#Start(...) abort
   let s:bin = bin_dir . '/language_server_' . bin_suffix
   call mkdir(bin_dir, 'p')
 
-  if empty(glob(s:bin))
+  if !filereadable(s:bin)
+    call delete(s:bin)
     if sha ==# s:language_server_sha
       let url = 'https://github.com/Exafunction/codeium/releases/download/language-server-v' . s:language_server_version . '/language_server_' . bin_suffix . '.gz'
     else
@@ -187,10 +198,14 @@ function! s:UnzipAndStart(status) abort
     let &shellcmdflag = old_shellcmdflag
     let &shellredir = old_shellredir
   else
+    if !executable('gzip')
+      call codeium#log#Error('Failed to extract language server binary: missing `gzip`.')
+      return ''
+    endif
     call system('gzip -d ' . s:bin . '.gz')
     call system('chmod +x ' . s:bin)
   endif
-  if empty(glob(s:bin))
+  if !filereadable(s:bin)
     call codeium#log#Error('Failed to download language server binary.')
     return ''
   endif
@@ -204,18 +219,20 @@ function! s:ActuallyStart() abort
 
   let args = [
         \ s:bin,
-        \ '--api_server_host', get(config, 'api_host', 'server.codeium.com'),
-        \ '--api_server_port', get(config, 'api_port', '443'),
+        \ '--api_server_url', get(config, 'api_url', 'https://server.codeium.com'),
         \ '--manager_dir', manager_dir
         \ ]
+  if has_key(config, 'api_url') && !empty(config.api_url)
+    let args += ['--enterprise_mode']
+  endif
 
   call codeium#log#Info('Launching server with manager_dir ' . manager_dir)
   if has('nvim')
-    let s:server_job = jobstart(args, {
+    let g:codeium_server_job = jobstart(args, {
                 \ 'on_stderr': { channel, data, t -> codeium#log#Info('[SERVER] ' . join(data, "\n")) },
                 \ })
   else
-    let s:server_job = job_start(args, {
+    let g:codeium_server_job = job_start(args, {
                 \ 'out_mode': 'raw',
                 \ 'err_cb': { channel, data -> codeium#log#Info('[SERVER] ' . data) },
                 \ })

@@ -47,17 +47,18 @@ function! codeium#CompletionText() abort
 endfunction
 
 function! codeium#Accept() abort
+  # 如果 codeium_tab_fallback 全局变量不存在则使用默认值赋值到 default 变量
+  # pumvisible() 为真，则使用 Ctrl+N 键，否则使用 tab 键盘
+  # 如果弹出菜单可见，pumvisible 为真
+  let default = get(g:, 'codeium_tab_fallback', pumvisible() ? "\<C-N>" : "\t")
+
   # 判断当前模式不是插入模式或替换模式，则为 true
   # mode() 返回当前 vim 中的模式，比如普通模式
   # !~# 是一个正式表达式符号，表示匹配失败
   # ^[iR] 表示以 i 或 R 开头
   if mode() !~# '^[iR]' || !exists('b:_codeium_completions')
-    return "\t"
+    return default
   endif
-  # 如果 codeium_tab_fallback 全局变量不存在则使用默认值赋值到 default 变量
-  # pumvisible() 为真，则使用 Ctrl+N 键，否则使用 tab 键盘
-  # 如果弹出菜单可见，pumvisible 为真
-  let default = get(g:, 'codeium_tab_fallback', pumvisible() ? "\<C-N>" : "\t")
 
   # 获取当前选中的补全项内容
   let current_completion = s:GetCurrentCompletionItem()
@@ -80,10 +81,14 @@ function! codeium#Accept() abort
 
   let delete_range = ''
   if end_offset - start_offset > 0
-      " We insert a space, escape to normal mode, then delete the inserted space.
-      " This lets us "accept" any auto-inserted indentation which is otherwise
-      " removed when we switch to normal mode.
-    let delete_range = " \<Esc>x0d" . (end_offset - start_offset) . 'li'
+    let delete_bytes = end_offset - start_offset
+    let delete_chars = strchars(strpart(getline('.'), 0, delete_bytes))
+    " We insert a space, escape to normal mode, then delete the inserted space.
+    " This lets us "accept" any auto-inserted indentation which is otherwise
+    " removed when we switch to normal mode.
+    " \"_ sequence makes sure to delete to the void register.
+    " This way our current yank is not overridden.
+    let delete_range = " \<Esc>\"_x0\"_d" . delete_chars . 'li'
   endif
 
   let insert_text = "\<C-R>\<C-O>=codeium#CompletionText()\<CR>"
@@ -100,7 +105,7 @@ endfunction
 
 # 用于处理从语言服务器返回的自动补全结果
 # out 是 response 每行结果
-function! s:HandleCompletionsResult(out, status) abort
+function! s:HandleCompletionsResult(out, err, status) abort
   # 不存在 b:_codeium_completions 说明前面的请求存在异常
   if exists('b:_codeium_completions')
     # 文本拼接成一行
@@ -109,6 +114,13 @@ function! s:HandleCompletionsResult(out, status) abort
       # 解析 response 获取 completionItems 字段
       # 并存放到 b:_codeium_completions.items 字段里
       let response = json_decode(response_text)
+      if get(response, 'code', v:null) isnot# v:null
+        call codeium#log#Error('Invalid response from language server')
+        call codeium#log#Error(response_text)
+        call codeium#log#Error('stderr: ' . join(a:err, ''))
+        call codeium#log#Exception()
+        return
+      endif
       let completionItems = get(response, 'completionItems', [])
 
       let b:_codeium_completions.items = completionItems
@@ -120,6 +132,8 @@ function! s:HandleCompletionsResult(out, status) abort
       call s:RenderCurrentCompletion()
     catch
       call codeium#log#Error('Invalid response from language server')
+      call codeium#log#Error(response_text)
+      call codeium#log#Error('stderr: ' . join(a:err, ''))
       call codeium#log#Exception()
     endtry
   endif
@@ -168,10 +182,13 @@ function! s:RenderCurrentCompletion() abort
   call codeium#RedrawStatusLine()
 
   # 如果当前模式不是插入模式、替换模式
-  # QA: 为啥第二个条件为啥这么写？
-  if mode() !~# '^[iR]' || (v:false && pumvisible())
+  if mode() !~# '^[iR]'
     return ''
   endif
+  if !get(g:, 'codeium_render', v:true)
+    return
+  endif
+
   # 获取选择的补全项
   let current_completion = s:GetCurrentCompletionItem()
   if current_completion is v:null
@@ -481,7 +498,7 @@ endfunction
 # 在 codeium#Complete 的基础上进行封装，在 vim 等待输入 sleep 75ms 执行补全
 function! codeium#DebouncedComplete(...) abort
   # 清除之前的自动补全  
-  call codeium#Clear(v:false)
+  call codeium#Clear()
   # 如果关闭了 codeium 的自动触发补全功能，则退出
   if get(g:, 'codeium_manual', v:false)
     return
@@ -541,13 +558,13 @@ function! codeium#RedrawStatusLine() abort
 endfunction
 
 function! codeium#ServerLeave() abort
-  if s:server_job is v:null
+  if !exists('g:codeium_server_job') || g:codeium_server_job is v:null
     return
   endif
 
   if has('nvim')
-    call jobstop(s:server_job)
+    call jobstop(g:codeium_server_job)
   else
-    call job_stop(s:server_job)
+    call job_stop(g:codeium_server_job)
   endif
 endfunction

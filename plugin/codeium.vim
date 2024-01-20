@@ -96,7 +96,9 @@ endif
 call s:SetStyle()
 # 启动一个计时器，0 表示不等待，只有在 vim 等待输入时才会调用回调
 # 在用户使用 Codeium 编辑器时启动相关的服务器功能并提高编辑器体验
-call timer_start(0, function('codeium#server#Start'))
+if codeium#Enabled()
+  call codeium#command#StartLanguageServer()
+endif
 
 # 获取当前正在编辑的文件的上一级目录
 # 为什么要2个 :h
@@ -112,6 +114,7 @@ endif
 
 function! CodeiumEnable()  " Enable Codeium if it is disabled
   let g:codeium_enabled = v:true
+  call codeium#command#StartLanguageServer()
 endfun
 
 command! CodeiumEnable :silent! call CodeiumEnable()
@@ -121,6 +124,16 @@ function! CodeiumDisable() " Disable Codeium altogether
 endfun
 
 command! CodeiumDisable :silent! call CodeiumDisable()
+
+function! CodeiumToggle()
+  if exists('g:codeium_enabled') && g:codeium_enabled == v:false
+      call CodeiumEnable()
+  else
+      call CodeiumDisable()
+  endif
+endfunction
+
+command! CodeiumToggle :silent! call CodeiumToggle()
 
 function! CodeiumManual() " Disable the automatic triggering of completions
   let g:codeium_manual = v:true
@@ -139,3 +152,4 @@ command! CodeiumAuto :silent! call CodeiumAuto()
 :amenu Plugin.Codeium.Disable\ \Codeium\ \(\:CodeiumDisable\) :call CodeiumDisable() <Esc>
 :amenu Plugin.Codeium.Manual\ \Codeium\ \AI\ \Autocompletion\ \(\:CodeiumManual\) :call CodeiumManual() <Esc>
 :amenu Plugin.Codeium.Automatic\ \Codeium\ \AI\ \Completion\ \(\:CodeiumAuto\) :call CodeiumAuto() <Esc>
+:amenu Plugin.Codeium.Toggle\ \Codeium\ \(\:CodeiumToggle\) :call CodeiumToggle() <Esc>
