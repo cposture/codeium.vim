@@ -86,12 +86,15 @@ let s:filetype_aliases = {
       \ }
 
 function! codeium#doc#GetDocument(bufId, curLine, curCol) abort
+  # lines: 一个包含文档内容的字符串列表 `lines`，其中，如果文档以行尾符结尾，列表最后一个元素是一个空字符串
+  # QA：为什么需要特别除了 EOF
   let lines = getbufline(a:bufId, 1, '$')
   if getbufvar(a:bufId, '&endofline')
     call add(lines, '')
   endif
 
   let filetype = substitute(getbufvar(a:bufId, '&filetype'), '\..*', '', '')
+  # 对文件类型别名做一个转换，将类似 cs 转换为 csharp, 文件类型为空则为 plaintext
   let language = get(s:filetype_aliases, empty(filetype) ? 'text' : filetype, filetype)
   if empty(filetype) && get(g:, 'codeium_warn_filetype_missing', v:true)
     call codeium#log#Warn('No filetype detected. This will affect completion quality.')
@@ -99,9 +102,9 @@ function! codeium#doc#GetDocument(bufId, curLine, curCol) abort
   endif
   let editor_language = empty(getbufvar(a:bufId, '&filetype')) ? 'unspecified' : getbufvar(a:bufId, '&filetype')
   let doc = {
-        \ 'text': join(lines, codeium#util#LineEndingChars()),
+        \ 'text': join(lines, codeium#util#LineEndingChars()),# 文档内容列表转为 text 并加上换行符\n
         \ 'editor_language': editor_language,
-        \ 'language': get(s:language_enum, language, 0),
+        \ 'language': get(s:language_enum, language, 0),# 将语言文本转为语言编号
         \ 'cursor_position': {'row': a:curLine - 1, 'col': a:curCol - 1},
         \ 'absolute_path': fnamemodify(bufname(a:bufId), ':p'),
         \ 'relative_path': fnamemodify(bufname(a:bufId), ':')
@@ -117,7 +120,7 @@ endfunction
 
 function! codeium#doc#GetEditorOptions() abort
   return {
-      \ 'tab_size': shiftwidth(),
-      \ 'insert_spaces': &expandtab ? v:true : v:false,
+      \ 'tab_size': shiftwidth(), 
+      \ 'insert_spaces': &expandtab ? v:true : v:false, # true 表示当前使用空格代替 tab
       \ }
 endfunction
