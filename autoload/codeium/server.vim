@@ -84,15 +84,21 @@ function! codeium#server#Request(type, data, ...) abort
     call chanclose(jobid, 'stdin')
     return jobid
   else
+    # 使用 job 启动进程执行 curl 命令，并处理命令的输入和输出  
     let job = job_start(args, {
                 \ 'in_mode': 'raw',
                 \ 'out_mode': 'raw',
-                \ 'out_cb': { channel, data -> add(result.out, data) },
-                \ 'exit_cb': { job, status -> s:OnExit(result, status, ExitCallback) },
-                \ 'close_cb': { channel -> s:OnClose(result, ExitCallback) }
+                \ 'out_cb': { channel, data -> add(result.out, data) }, # 接收命令的 stdout，每收到一行输出就调用一次该函数：保存到 result.out
+                \ 'exit_cb': { job, status -> s:OnExit(result, status, ExitCallback) }, # 任务结束后调用 s:OnExit
+                \ 'close_cb': { channel -> s:OnClose(result, ExitCallback) } # 当任务使用的管道被关闭时调用 s:OnClose
                 \ })
+    # 获取任务的输入通道对象
     let channel = job_getchannel(job)
+    # 使用 ch_sendraw 函数向该通道发送请求数据 data
+    # 异步发送
     call ch_sendraw(channel, data)
+    # 关闭该通道的写入端口
+    # 这意味着我们已经成功地向命令传递了请求数据，而 `curl` 命令会从输入通道读取这部分数据
     call ch_close_in(channel)
     return job
   endif
